@@ -10,10 +10,7 @@ interface Dependency<Node> {
     fun cost(): Int
 }
 
-
-class DependencySolver<Node, Dep: Dependency<Node>>(
-    val dependencyFn: (Node) -> List<Dep>,
-) {
+interface DependencySolver<Node, Dep: Dependency<Node>> {
     data class Solution<Node, Dep: Dependency<Node>>(
         val result: Node,
         val creationOrder: List<Node>,
@@ -21,17 +18,14 @@ class DependencySolver<Node, Dep: Dependency<Node>>(
         val dependencyOrder: List<Dep>,
     )
 
-    private data class Result<Node, Dep: Dependency<Node>>(
-        val node: Node,
-        var usedDep: Dep?,
-        var cost: Int,
-        var relaxed: Boolean,
-    )
+    fun solve(node: Node): Solution<Node, Dep>
+}
 
+class TransitiveClosureDependencySolver<Node, Dep: Dependency<Node>>(
+    val dependencyFn: (Node) -> List<Dep>,
+): DependencySolver<Node, Dep> {
     private val dependencies = mutableMapOf<Node, List<Dep>>()
     private val backlinks = mutableMapOf<Node, MutableSet<Node>>()
-    private val results = mutableMapOf<Node, Result<Node, Dep>>()
-    private val relaxQueue = mutableListOf<Node>()
 
     private fun transitivelyCloseDependencies(node: Node) {
         if (this.dependencies.containsKey(node)) return
@@ -40,15 +34,8 @@ class DependencySolver<Node, Dep: Dependency<Node>>(
 
         while (queue.isNotEmpty()) {
             val current = queue.removeLast()
-            relaxQueue.add(current)
             val dependencies = dependencyFn(current)
             this.dependencies[current] = dependencies
-            this.results[current] = Result(
-                current,
-                null,
-                Int.MAX_VALUE,
-                false,
-            )
             for (dep in dependencies) {
                 for (depNode in dep.dependencies) {
                     backlinks.getOrDefault(depNode, mutableSetOf()).add(current)
@@ -59,22 +46,9 @@ class DependencySolver<Node, Dep: Dependency<Node>>(
         }
     }
 
-    private fun relaxUntilStable() {
-        while (relaxQueue.isNotEmpty()) {
-            val current = relaxQueue.removeLast()
-            val result = results[current] ?: throw IllegalStateException("Dependency not found")
-            if (result.relaxed) continue
-            result.relaxed = true
-            for (dep in dependencies[current]!!) {
-
-            }
-        }
-    }
-
-    fun solve(node: Node): Solution<Node, Dep> {
+    override fun solve(node: Node): DependencySolver.Solution<Node, Dep> {
         transitivelyCloseDependencies(node)
-        relaxUntilStable()
-
+        throw NotImplementedError("TODO")
     }
 }
 
@@ -94,7 +68,6 @@ fun main() {
 
     val constructors = sootClass.methods
         .filter { it.name == "<init>" }
-        .map { it.body. }
 
     println(constructors.joinToString("\n"))
 }
