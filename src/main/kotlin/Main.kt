@@ -1,7 +1,14 @@
 package org.example
 
+import com.palantir.javapoet.JavaFile
+import com.palantir.javapoet.MethodSpec
+import com.palantir.javapoet.TypeName
+import com.palantir.javapoet.TypeSpec
 import sootup.core.model.SourceType
+import sootup.core.types.ArrayType
+import sootup.core.types.ClassType
 import sootup.core.types.PrimitiveType
+import sootup.core.types.Type
 import sootup.java.bytecode.frontend.inputlocation.ArchiveBasedAnalysisInputLocation
 import sootup.java.bytecode.frontend.inputlocation.DefaultRuntimeAnalysisInputLocation
 import sootup.java.core.JavaSootClass
@@ -9,12 +16,11 @@ import sootup.java.core.JavaSootMethod
 import sootup.java.core.types.JavaClassType
 import sootup.java.core.views.JavaView
 import java.io.File
-import java.io.FileNotFoundException
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
-import java.util.jar.JarFile
+import javax.lang.model.element.Modifier
 import kotlin.random.Random
 
 
@@ -95,7 +101,7 @@ class MonteCarloDependencySolver<Node, Dep: Dependency<Node>>(
     override fun solve(node: Node): DependencySolver.Solution<Node, Dep>? {
         val rng = config.random
 
-        var bestSolution: DependencySolver.Solution<Node, Dep>? = null;
+        var bestSolution: DependencySolver.Solution<Node, Dep>? = null
 
         for (trial in 0 until config.numberOfTrials) {
             val creationOrder = mutableListOf<Node>()
@@ -141,35 +147,48 @@ class MonteCarloDependencySolver<Node, Dep: Dependency<Node>>(
     }
 }
 
-sealed interface UnderstandingDependency : Dependency<UnderstandingNode> {
-    data class CallMethod(val ctor: JavaSootMethod, val params: List<UnderstandingNode.Class>) : UnderstandingDependency {
-        override val dependencies: List<UnderstandingNode> = params
+sealed interface SootNode {
+    sealed interface SootType : SootNode {
+        val type: Type
+    }
+
+    data class Primitive(override val type: PrimitiveType) : SootType
+    data class Class(val cls: JavaSootClass) : SootType {
+        override val type get() = cls.type
+    }
+    sealed interface Method : SootNode
+    data class PublicConstructor(val ctor: JavaSootMethod) : Method
+    data class StaticMethod(val method: JavaSootMethod) : Method
+}
+
+sealed interface SootDependency : Dependency<SootNode> {
+    data class CallMethod(val method: JavaSootMethod, val params: List<SootNode.SootType>) : SootDependency {
+        override val dependencies: List<SootNode> = params
         override fun cost(): Int = 1
     }
 
-    data class UseConstructor(val ctor: JavaSootMethod) : UnderstandingDependency {
-        override val dependencies: List<UnderstandingNode> = listOf(UnderstandingNode.PublicConstructor(ctor))
+    data class UseConstructor(val ctor: JavaSootMethod) : SootDependency {
+        override val dependencies: List<SootNode> = listOf(SootNode.PublicConstructor(ctor))
         override fun cost(): Int = 0
     }
 
-    data class JdkInitialization(val cls: JavaSootClass) : UnderstandingDependency {
-        override val dependencies: List<UnderstandingNode> = emptyList()
+    data class JdkInitialization(val cls: JavaSootClass) : SootDependency {
+        override val dependencies: List<SootNode> = emptyList()
         override fun cost(): Int = 2
     }
 
-    data class Upcast(val subclass: JavaSootClass, val superclass: JavaSootClass) : UnderstandingDependency {
-        override val dependencies: List<UnderstandingNode> = listOf(UnderstandingNode.Class(subclass))
+    data class Upcast(val subclass: JavaSootClass, val superclass: JavaSootClass) : SootDependency {
+        override val dependencies: List<SootNode> = listOf(SootNode.Class(subclass))
+        override fun cost(): Int = 0
+    }
+
+    data class Primitive(val type: PrimitiveType) : SootDependency {
+        override val dependencies: List<SootNode> = emptyList()
         override fun cost(): Int = 0
     }
 }
 
-sealed interface UnderstandingNode {
-    data class Class(val cls: JavaSootClass) : UnderstandingNode
-    data class PublicConstructor(val ctor: JavaSootMethod) : UnderstandingNode
-}
-
-
-class DependencyMiner(val view: JavaView) {
+class SootDependencyContext(val view: JavaView) {
     val subclasses: Map<String, List<JavaSootClass>>
 
     init {
@@ -191,41 +210,147 @@ class DependencyMiner(val view: JavaView) {
         this.subclasses = subclasses
     }
 
-    fun dependenciesOf(node: UnderstandingNode): List<UnderstandingDependency> {
+    fun dependenciesOf(node: SootNode): List<SootDependency> {
         return when (node) {
-            is UnderstandingNode.Class -> {
+            is SootNode.Class -> {
                 val cls = node.cls
                 if (cls.type.packageName.name.startsWith("java.")) {
-                    return listOf(UnderstandingDependency.JdkInitialization(cls))
+                    return listOf(SootDependency.JdkInitialization(cls))
                 }
 
                 val constructors = cls.methods
                     .filter { it.isPublic && it.name == "<init>" }
-                    .map { UnderstandingDependency.UseConstructor(it) }
+                    .map { SootDependency.UseConstructor(it) }
 
                 val upcasts = subclasses[cls.name]
-                    ?.map { UnderstandingDependency.Upcast(it, cls) } ?: emptyList()
+                    ?.map { SootDependency.Upcast(it, cls) } ?: emptyList()
 
                 constructors + upcasts
             }
 
-            is UnderstandingNode.PublicConstructor -> {
+            is SootNode.PublicConstructor -> {
                 val ctor = node.ctor
-                listOf(UnderstandingDependency.CallMethod(
+                listOf(SootDependency.CallMethod(
                     ctor,
                     ctor.parameterTypes.mapNotNull {
                         when (it) {
-                            is PrimitiveType -> null
-                            is JavaClassType -> UnderstandingNode.Class(view.getClass(it).get())
+                            is PrimitiveType -> SootNode.Primitive(it)
+                            is JavaClassType -> SootNode.Class(view.getClass(it).get())
                             // else -> throw NotImplementedError("Type $it not supported as method parameter")
                             else -> null
                         }
                     }
                 ))
             }
+
+            is SootNode.StaticMethod -> {
+                listOf(SootDependency.CallMethod(
+                    node.method,
+                    node.method.parameterTypes.mapNotNull {
+                        when (it) {
+                            is PrimitiveType -> SootNode.Primitive(it)
+                            is JavaClassType -> SootNode.Class(view.getClass(it).get())
+                            // else -> throw NotImplementedError("Type $it not supported as method parameter")
+                            else -> null
+                        }
+                    }
+                ))
+            }
+
+            is SootNode.Primitive -> {
+                listOf(SootDependency.Primitive(node.type))
+            }
         }
     }
 }
+
+class CodeGenerator<Node>(private val builder: MethodSpec.Builder) {
+    private val names: MutableMap<Node, String> = mutableMapOf()
+    private val usedNames = mutableSetOf<String>()
+
+    fun getFreshName(hint: String = "var"): String {
+        if (!usedNames.contains(hint)) return hint
+        for (nonce in generateSequence(1) { it + 1 }) {
+            val name = "${hint}$nonce"
+            if (usedNames.contains(name)) return name
+        }
+        throw UnsupportedOperationException()
+    }
+
+    fun addComment(comment: String) {
+        builder.addComment(comment)
+    }
+
+    fun addStatement(statement: String) {
+        builder.addStatement(statement)
+    }
+
+    fun registerValue(name: String, node: Node) {
+        names[node] = name
+        usedNames.add(name)
+    }
+
+    fun getValue(node: Node): String? {
+        return names[node]
+    }
+}
+
+fun Type.getName(): String {
+    return when (this) {
+        is PrimitiveType -> name
+        is ClassType -> fullyQualifiedName
+        is ArrayType -> "${elementType.getName()}[]"
+        else -> throw NotImplementedError("Cannot get name for $this")
+    }
+}
+
+fun CodeGenerator<SootNode>.getAnyValue(type: Type): String? {
+    return if (type is PrimitiveType) {
+        when (type) {
+            is PrimitiveType.CharType -> "'?'"
+            is PrimitiveType.BooleanType -> "true"
+            is PrimitiveType.ByteType -> "0"
+            is PrimitiveType.ShortType -> "0"
+            is PrimitiveType.IntType -> "0"
+            is PrimitiveType.LongType -> "0"
+            is PrimitiveType.FloatType -> "0f"
+            is PrimitiveType.DoubleType -> "0.0"
+            else -> throw NotImplementedError("Cannot get value for primitive $type")
+        }
+    } else if (type is ClassType) {
+        if (type.fullyQualifiedName == "java.lang.String") {
+            "\"string\""
+        } else {
+            null
+        }
+    } else {
+        throw NotImplementedError("Cannot get value for $this")
+    }
+}
+
+fun CodeGenerator<SootNode>.emit(node: SootNode, dependency: SootDependency) {
+    this.addComment("$dependency")
+    when (dependency) {
+        is SootDependency.CallMethod -> {
+            val method = dependency.method
+            if (method.name == "<init>") {
+                val declType = dependency.method.declClassType.getName()
+                val name = getFreshName(method.declClassType.className)
+                val params = dependency.params.map {
+                    getValue(it) ?: getAnyValue(it.type)
+                }.joinToString("\n")
+                this.addStatement("$declType $name = new $declType($params)")
+                this.registerValue(name, node)
+            }
+        }
+        is SootDependency.UseConstructor -> {
+            val name = getValue(dependency.dependencies[0])!!
+            this.registerValue(name, node)
+        }
+        else -> throw NotImplementedError("$dependency")
+    }
+}
+
 
 fun downloadJar(url: String): File {
     val fileName = url.substringAfterLast("/")
@@ -260,7 +385,6 @@ fun downloadJar(url: String): File {
     return targetFile
 }
 
-
 fun main() {
     val jar = downloadJar("https://repo1.maven.org/maven2/org/apache/commons/commons-text/1.13.0/commons-text-1.13.0.jar")
     val sources = downloadJar("https://repo1.maven.org/maven2/org/apache/commons/commons-text/1.13.0/commons-text-1.13.0-sources.jar")
@@ -270,49 +394,40 @@ fun main() {
         DefaultRuntimeAnalysisInputLocation(),
     ))
 
-    val classToCreate = view.identifierFactory
-        .getClassType("sun.jvm.hotspot.oops.NarrowKlassField")
-    val sootClass = view.getClass(classToCreate).get()
+    val context = SootDependencyContext(view)
 
-    val miner = DependencyMiner(view)
-
-    val solver = MonteCarloDependencySolver<UnderstandingNode, UnderstandingDependency> {
-        miner.dependenciesOf(it)
+    val solver = MonteCarloDependencySolver<SootNode, SootDependency> {
+        context.dependenciesOf(it)
     }
 
-    val result = solver.solve(UnderstandingNode.Class(sootClass))
+    val classToCreate = view.identifierFactory
+        .getClassType("org.apache.commons.text.StringSubstitutor")
+    val sootClass = view.getClass(classToCreate).get()
+
+    val result = solver.solve(SootNode.Class(sootClass))
     if (result == null) {
         println("No solution found")
     }
 
     println(result?.dependencyOrder?.joinToString("\n"))
+    if (result == null) return
 
-    /*
-    for (obj in result?.creationOrder ?: emptyList()) {
-        when (obj) {
-            is UnderstandingNode.Class -> {
-                println(obj.cls)
-                println(obj.cls.classSource.sourcePath)
-                println(obj.cls.position.firstLine)
-            }
-            is UnderstandingNode.PublicConstructor -> {
-                println(obj.ctor)
-                println(view.getClass(obj.ctor.declClassType).get().classSource)
-                println(obj.ctor.position)
-            }
-        }
-    }
-     */
-    return
+    val javaFile = JavaFile.builder("org.example",
+        TypeSpec.classBuilder("Main").apply {
+            addModifiers(Modifier.PUBLIC, Modifier.FINAL)
+            addMethod(MethodSpec.methodBuilder("main").apply {
+                addModifiers(Modifier.PUBLIC, Modifier.STATIC)
+                returns(TypeName.VOID)
+                addParameter(Array<String>::class.java, "args")
 
-    for (cls in view.classes) {
-        val result = solver.solve(UnderstandingNode.Class(cls)) ?: continue
-        if (result.cost > 10) {
-            println("======================================")
-            println("High cost for ${cls.name}: ${result.cost}")
-            println(result.dependencyOrder.joinToString("\n"))
-            println("======================================")
-            println("\n")
-        }
-    }
+                val codeGenerator = CodeGenerator<SootNode>(this)
+
+                for ((node, dep) in result.creationOrder.zip(result.dependencyOrder)) {
+                    codeGenerator.emit(node, dep)
+                }
+            }.build())
+        }.build()
+    ).build()
+
+    javaFile.writeTo(System.out)
 }

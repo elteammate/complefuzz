@@ -22,6 +22,8 @@ dependencies {
     api("org.soot-oss:sootup.analysis.interprocedural:2.0.0")
     api("org.soot-oss:sootup.qilin:2.0.0")
     api("org.soot-oss:sootup.codepropertygraph:2.0.0")
+    implementation("com.github.javaparser:javaparser-symbol-solver-core:3.26.3")
+    implementation("com.palantir.javapoet:javapoet:0.6.0")
 }
 
 tasks.test {
