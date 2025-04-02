@@ -344,7 +344,7 @@ class SootDependencyContext(private val view: JavaView) {
         return method.parameterTypes.mapNotNull {
             when (it) {
                 is PrimitiveType -> SootNode.Primitive(it)
-                is JavaClassType -> SootNode.Class(view.getClass(it).get())
+                is JavaClassType -> SootNode.Class(view.getClass(it).getOrNull() ?: throw IllegalArgumentException("Class is not analyzed"))
                 is ArrayType -> SootNode.Array(it.elementType, it.dimension)
                 else -> throw IllegalArgumentException("Cannot get parameters for $it")
             }
@@ -402,7 +402,16 @@ class SootDependencyContext(private val view: JavaView) {
             }
         }
     }
+
+    fun tryDependenciesOf(node: SootNode): List<SootDependency> = run {
+        try {
+            dependenciesOf(node)
+        } catch (e: IllegalArgumentException) {
+            emptyList()
+        }
+    }
 }
+
 
 /**
  * Wrapper around JavaPoet's Builder.
@@ -671,15 +680,18 @@ fun main() {
     val context = SootDependencyContext(view)
 
     val solver = MonteCarloDependencySolver<SootNode, SootDependency> {
-        context.dependenciesOf(it)
+        context.tryDependenciesOf(it)
     }
 
     for (cls in view.classes) {
+        if (!cls.isPublic) continue
         val result = solver.solve(SootNode.Class(cls))
         if (result == null) {
             println("No solution found for class ${cls.name}")
             continue
         }
+
+        println("Generated example for ${cls.name}")
 
         val javaFile = JavaFile.builder("org.example",
             TypeSpec.classBuilder("Main").apply {
@@ -700,5 +712,7 @@ fun main() {
 
         val code = javaFile.toString()
         assert(compileJavaCode(code, jars))
+
+        println()
     }
 }
