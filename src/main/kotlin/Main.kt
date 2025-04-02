@@ -633,7 +633,15 @@ fun compileJavaCode(javaCode: String, jars: List<File>): Boolean {
 
         val process = processBuilder.start()
         val exitCode = process.waitFor()
-        process.inputStream.copyTo(System.out)
+
+        val output = process.inputStream.readAllBytes().decodeToString()
+        println(output)
+
+        if (output.isEmpty()) {
+            println("============ Successfully generated example ============")
+            println(javaCode)
+            println("========================================================")
+        }
 
         return exitCode == 0
     } catch (e: IOException) {
