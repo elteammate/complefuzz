@@ -526,7 +526,7 @@ fun CodeGenerator<SootNode>.emit(dependency: SootDependency) {
                     val name = getFreshName(declType.getName().substringAfterLast("."))
                     val params = dependency.params.map {
                         getValue(it) ?: getAnyValue(it.type)
-                    }.joinToString("\n")
+                    }.joinToString(", ")
                     this.addStatement("${declType.getName()} $name = new $declType($params)")
                     this.registerValue(name, node)
                 }
@@ -536,7 +536,7 @@ fun CodeGenerator<SootNode>.emit(dependency: SootDependency) {
                     val name = getFreshName(declType.getName().substringAfterLast("."))
                     val params = dependency.params.map {
                         getValue(it) ?: getAnyValue(it.type)
-                    }.joinToString("\n")
+                    }.joinToString(", ")
                     this.addStatement("${declType.getName()} $name = $declType.${method.name}($params)")
                     this.registerValue(name, node)
                 }
@@ -548,7 +548,7 @@ fun CodeGenerator<SootNode>.emit(dependency: SootDependency) {
                     val name = getFreshName(declType.getName().substringAfterLast("."))
                     val params = dependency.params.map {
                         getValue(it) ?: getAnyValue(it.type)
-                    }.joinToString("\n")
+                    }.joinToString(", ")
                     this.addStatement("${declType.getName()} $name = $receiverName.${method.name}($params)")
                     this.registerValue(name, node)
                 }
